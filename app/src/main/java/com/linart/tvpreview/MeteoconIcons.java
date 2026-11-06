@@ -7,17 +7,28 @@ import android.graphics.Canvas;
 import com.caverock.androidsvg.SVG;
 
 import java.io.InputStream;
-import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * Bundled Meteocons (MIT, assets/meteocons) for Open-Meteo weather codes.
  * Codes arrive as "d<WMO>" or "n<WMO>" (day / night) from PublicForecastClient.
  */
 final class MeteoconIcons {
+    /** Icons are re-rendered from the bundled SVGs on demand, so the cache can stay small. */
+    private static final long CACHE_BUDGET = 2L * 1024 * 1024;
     private final Context context;
-    private final HashMap<String, Bitmap> cache = new HashMap<>();
+    private final LinkedHashMap<String, Bitmap> cache = new LinkedHashMap<>(16, 0.75f, true);
+    private long cacheBytes;
 
     MeteoconIcons(Context context) { this.context = context.getApplicationContext(); }
+
+    /** Drops every rendered icon; the next draw renders it again from the asset. */
+    void clear() {
+        cache.clear();
+        cacheBytes = 0;
+    }
 
     /** Asset name (without .svg) for an Open-Meteo icon code such as "d61" or "n2". */
     static String assetFor(String code) {
@@ -84,11 +95,22 @@ final class MeteoconIcons {
             svg.setDocumentHeight(size);
             Bitmap result = Bitmap.createBitmap(Math.max(1, size), Math.max(1, size), Bitmap.Config.ARGB_8888);
             svg.renderToCanvas(new Canvas(result));
-            cache.put(key, result);
+            remember(key, result);
             return result;
         } catch (Exception e) {
             android.util.Log.w("LinarTV", "Meteocon unavailable: " + name, e);
             return null;
+        }
+    }
+
+    private void remember(String key, Bitmap bitmap) {
+        Bitmap previous = cache.put(key, bitmap);
+        cacheBytes += bitmap.getAllocationByteCount();
+        if (previous != null) cacheBytes -= previous.getAllocationByteCount();
+        Iterator<Map.Entry<String, Bitmap>> entries = cache.entrySet().iterator();
+        while (cacheBytes > CACHE_BUDGET && cache.size() > 1 && entries.hasNext()) {
+            cacheBytes -= entries.next().getValue().getAllocationByteCount();
+            entries.remove();
         }
     }
 }

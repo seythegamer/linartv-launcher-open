@@ -115,7 +115,7 @@ public final class DashboardActivity extends Activity {
     /** Image types the built-in picker offers; every picked image is stored as PNG. */
     private static final String[] CUSTOM_ICON_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".svg"};
     /** Longest side kept when a picked image is stored for a dock tile. */
-    private static final int CUSTOM_ICON_MAX_PX = 512;
+    private static final int CUSTOM_ICON_MAX_PX = 384;
     /** Refuse absurdly large files instead of risking an out-of-memory while decoding. */
     private static final long CUSTOM_ICON_MAX_BYTES = 16L * 1024 * 1024;
     /** Launchable system entries that are not apps a person would pin to the dock. */
@@ -147,7 +147,7 @@ public final class DashboardActivity extends Activity {
     private int detailMuted;
     private int detailCard;
     private int detailAstronomy;
-    private final HashMap<String, Bitmap> logoCache = new HashMap<>();
+    private final BitmapCache logoCache = new BitmapCache(4L * 1024 * 1024);
     private final List<View> dockCards = new ArrayList<>();
     private final List<View> dockGlows = new ArrayList<>();
     private final List<String> dockPackages = new ArrayList<>();
@@ -155,7 +155,7 @@ public final class DashboardActivity extends Activity {
     private List<String> dockMoveBackup;
     private boolean suppressDockKeyUp;
     private TextView dockMoveHint;
-    private final HashMap<String, Bitmap> customIconCache = new HashMap<>();
+    private final BitmapCache customIconCache = new BitmapCache(8L * 1024 * 1024);
     private String customIconPkg;
     private int customIconDockIndex = -1;
     private ImageView customIconPreview;
@@ -177,6 +177,8 @@ public final class DashboardActivity extends Activity {
     private LinearLayout drawerRows;
     private boolean drawerRowsLoaded;
     private static final int APP_ROW_HEIGHT = 142;
+    /** Room kept around the app rows so the focus aura is never cut by the scrolling viewport. */
+    private static final int AURA_ROOM = 34;
     private ImageView dockExpand;
     private View lastDockFocus;
     private View firstExtraApp;
@@ -184,6 +186,46 @@ public final class DashboardActivity extends Activity {
     private CrestRepository crests;
     private final HashMap<String, List<CrestSlot>> crestSlots = new HashMap<>();
     private final WeakHashMap<Bitmap, Bitmap> scaledCrests = new WeakHashMap<>();
+    /**
+     * Small LRU map of bitmaps with a byte budget. Bitmaps that are evicted are not recycled:
+     * an ImageView may still be showing them, so the garbage collector decides when to free them.
+     */
+    private static final class BitmapCache extends java.util.LinkedHashMap<String, Bitmap> {
+        private final long maxBytes;
+        private long bytes;
+        BitmapCache(long maxBytes) {
+            super(16, 0.75f, true);
+            this.maxBytes = maxBytes;
+        }
+        @Override public Bitmap put(String key, Bitmap value) {
+            Bitmap previous = super.put(key, value);
+            bytes += sizeOf(value);
+            if (previous != null) bytes -= sizeOf(previous);
+            trimToBudget();
+            return previous;
+        }
+        @Override public Bitmap remove(Object key) {
+            Bitmap previous = super.remove(key);
+            if (previous != null) bytes -= sizeOf(previous);
+            return previous;
+        }
+        @Override public void clear() {
+            super.clear();
+            bytes = 0;
+        }
+        private void trimToBudget() {
+            if (bytes <= maxBytes) return;
+            java.util.Iterator<java.util.Map.Entry<String, Bitmap>> entries = entrySet().iterator();
+            while (bytes > maxBytes && entries.hasNext()) {
+                Bitmap eldest = entries.next().getValue();
+                entries.remove();
+                bytes -= sizeOf(eldest);
+            }
+        }
+        private static long sizeOf(Bitmap bitmap) {
+            return bitmap == null ? 0 : bitmap.getAllocationByteCount();
+        }
+    }
     private static final class CrestSlot {
         final ImageView image;
         final View fallback;
@@ -235,6 +277,8 @@ public final class DashboardActivity extends Activity {
     private boolean popupOpen;
     private boolean rebuildAfterPopup;
     private int popupDepth;
+    /** Focus key of the dashboard view that had focus before the first dialog opened. */
+    private String popupReturnFocusKey;
     private final List<Dialog> visibleDialogs = new ArrayList<>();
     private ImageView popupBlurImage;
     private Bitmap popupBlurBitmap;
@@ -358,7 +402,7 @@ public final class DashboardActivity extends Activity {
         super.onResume();
         if (spotify == null) spotify = new SpotifyNowPlaying(this, (title, artist, cover, playing) -> {
             spotifyTrack = title; spotifyPerformer = artist;
-            spotifyArtwork = cover; spotifyPlaying = playing;
+            spotifyArtwork = scaledCover(cover); spotifyPlaying = playing;
             updateSpotifyBar();
         });
         spotify.start();
@@ -390,6 +434,28 @@ public final class DashboardActivity extends Activity {
             photoUploadServer = null;
         }
         super.onDestroy();
+    }
+
+    /**
+     * Everything cached here can be rebuilt from a resource, a file or the network, so it is
+     * dropped as soon as the system asks for memory. The views themselves keep their own bitmaps.
+     */
+    @Override public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level >= TRIM_MEMORY_RUNNING_LOW) {
+            logoCache.clear();
+            customIconCache.clear();
+            if (weatherIcons != null) weatherIcons.clear();
+        }
+        if (level >= TRIM_MEMORY_MODERATE) AURA_CACHE.clear();
+    }
+
+    @Override public void onLowMemory() {
+        super.onLowMemory();
+        logoCache.clear();
+        customIconCache.clear();
+        if (weatherIcons != null) weatherIcons.clear();
+        AURA_CACHE.clear();
     }
 
     private boolean isNight() {
@@ -909,7 +975,6 @@ public final class DashboardActivity extends Activity {
         wrap.setClipToPadding(false);
         View glow = new View(this);
         glow.setBackground(new AppGlowDrawable(20, false));
-        glow.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         glow.setAlpha(0f);
         FrameLayout.LayoutParams glowParams = new FrameLayout.LayoutParams(-1, -1);
         glowParams.setMargins(-px(24), -px(24), -px(24), -px(24));
@@ -1139,7 +1204,6 @@ public final class DashboardActivity extends Activity {
         wrap.setClipChildren(false);
         View glow = new View(this);
         glow.setBackground(new AppGlowDrawable(13, false));
-        glow.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         glow.setAlpha(0f);
         FrameLayout.LayoutParams glowParams = new FrameLayout.LayoutParams(-1, -1);
         glowParams.setMargins(-px(16), -px(16), -px(16), -px(16));
@@ -2159,7 +2223,6 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
     private View tileGlow(int x, int y, int w, int h, int radius) {
         View glow = new View(this);
         glow.setBackground(new AppGlowDrawable(radius, true));
-        glow.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         glow.setAlpha(0f);
         place(glow, x - 24, y - 22, w + 48, h + 44);
         return glow;
@@ -2237,6 +2300,19 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
     /** Width of the Spotify/update bar: it stops before the top-right group. */
     private int topBarWidth() {
         return Math.max(560, toolbarLeft - 28 - 430);
+    }
+
+    /** The bar draws a ~70 px cover, so a full notification artwork never needs to be kept. */
+    private static final int SPOTIFY_COVER_MAX_PX = 192;
+
+    /** The bar shows a small cover; keep only that much of the notification artwork. */
+    private Bitmap scaledCover(Bitmap cover) {
+        if (cover == null) return null;
+        int longest = Math.max(cover.getWidth(), cover.getHeight());
+        if (longest <= SPOTIFY_COVER_MAX_PX) return cover;
+        float ratio = SPOTIFY_COVER_MAX_PX / (float) longest;
+        return Bitmap.createScaledBitmap(cover, Math.max(1, Math.round(cover.getWidth() * ratio)),
+                Math.max(1, Math.round(cover.getHeight() * ratio)), true);
     }
 
     private void updateSpotifyBar() {
@@ -2757,7 +2833,6 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
         if (live) {
             View liveAura = new View(this);
             liveAura.setBackground(new AppGlowDrawable(15, false, 0x90FF3556, 0xA5FF7186));
-            liveAura.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
             place(liveAura, x + 306, y + 213, 158, 74);
             TextView liveBadge = text("LIVE", 20, 0xFFFFFFFF, true,
                     x + 330, y + 235, 110, 30);
@@ -2767,7 +2842,6 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
             // Match day: a green badge in the LIVE style instead of the date.
             View todayAura = new View(this);
             todayAura.setBackground(new AppGlowDrawable(15, false, 0x9022B35E, 0xA562D98C));
-            todayAura.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
             place(todayAura, x + 306, y + 213, 158, 74);
             TextView todayBadge = text(tr("DZISIAJ", "TODAY"), 20, 0xFFFFFFFF, true,
                     x + 330, y + 235, 110, 30);
@@ -3210,6 +3284,10 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
 
     private void showDialogWithBlur(Dialog dialog, Runnable afterDismiss) {
         long preparationStarted = android.os.SystemClock.elapsedRealtimeNanos();
+        if (popupDepth == 0) {
+            View focused = getCurrentFocus();
+            popupReturnFocusKey = focused == null ? null : focusKey(focused);
+        }
         popupDepth++;
         popupOpen = true;
         handler.removeCallbacks(startScreensaver);
@@ -3229,12 +3307,16 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
         ensurePopupBackdrop();
         dialog.setOnDismissListener(d -> {
             visibleDialogs.remove(dialog);
+            // A dismissed dialog keeps its whole view hierarchy alive; forget the reference so
+            // the next settings build does not leave the old one attached to the activity.
+            if (dialog == publicSettingsDialog) publicSettingsDialog = null;
             for (View below : hidden) {
                 int left = hiddenBy.merge(below, -1, Integer::sum);
                 if (left <= 0) { hiddenBy.remove(below); below.setAlpha(1f); }
             }
             popupOpen = --popupDepth > 0;
             if (!popupOpen) releasePopupBackdrop();
+            if (!popupOpen) restoreDashboardFocus();
             if (afterDismiss != null) afterDismiss.run();
             rebuildWhenPopupsClose();
             resetScreensaverTimer();
@@ -3298,6 +3380,22 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
             popupBlurBitmap.recycle();
             popupBlurBitmap = null;
         }
+    }
+
+    /**
+     * A setting can rebuild the dashboard while its dialog is still in front; such a rebuild
+     * cannot take focus, so after the last window closes the remote would do nothing until the
+     * first key press. Give focus back to the tile the user came from.
+     */
+    private void restoreDashboardFocus() {
+        final String key = popupReturnFocusKey;
+        popupReturnFocusKey = null;
+        handler.postDelayed(() -> {
+            if (popupOpen || root == null || !root.isAttachedToWindow() || root.findFocus() != null) return;
+            View target = key == null ? null : findByFocusKey(root, key);
+            if (target == null && !dockCards.isEmpty()) target = dockCards.get(0);
+            if (target != null) target.requestFocus();
+        }, 60);
     }
 
     private void rebuildWhenPopupsClose() {
@@ -3568,6 +3666,12 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
         dockMoveHint = null;
         if (dockMoveIndex >= 0) handler.post(this::paintDockMove);
 
+        // A rebuilt dashboard invalidates the blurred screenshot the app list shows behind it.
+        if (drawerBlurImage != null) drawerBlurImage.setImageDrawable(null);
+        if (drawerBlurBitmap != null) {
+            drawerBlurBitmap.recycle();
+            drawerBlurBitmap = null;
+        }
         drawerBackdrop = new FrameLayout(this);
         drawerBackdrop.setClickable(true);
         drawerBackdrop.setOnClickListener(v -> closeAppDrawer());
@@ -3590,14 +3694,25 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
         appDrawer.setFocusable(false);
         appDrawer.setClipChildren(false);
         appDrawer.setClipToPadding(false);
-        place(appDrawer, 36, 450, 1600, APP_ROW_HEIGHT * 3);
-        appDrawer.setVisibility(View.GONE);
+        // The aura reaches px(24) past a tile and the focused tile is 10% larger, so the scrolling
+        // viewport has to be that much bigger than the rows: otherwise it slices the aura of the
+        // outer columns and of the first row with a straight edge. No room at the bottom, or the
+        // next row would peek out under the panel.
+        place(appDrawer, 36 - AURA_ROOM, 450 - AURA_ROOM,
+                1600 + 2 * AURA_ROOM, APP_ROW_HEIGHT * 3 + AURA_ROOM);
+        appDrawer.setPadding(px(AURA_ROOM), px(AURA_ROOM), px(AURA_ROOM), 0);
+        // Invisible rather than gone: the rows keep their layout and their drawing caches between
+        // openings, so showing the list only has to draw them.
+        appDrawer.setVisibility(View.INVISIBLE);
         drawerRows = new LinearLayout(this);
         drawerRows.setOrientation(LinearLayout.VERTICAL);
         drawerRows.setClipChildren(false);
         appDrawer.addView(drawerRows, new ScrollView.LayoutParams(-1, -2));
         extraAppRows.clear();
         drawerRowsLoaded = false;
+        // Read the app list while the dashboard is idle instead of inside the key press that opens
+        // it; buildDrawerRows() ignores the call if a newer screen replaced this container.
+        handler.postDelayed(() -> buildDrawerRows(drawerRows), 1500);
 
         View expandGlow = tileGlow(817, 894, 38, 38, 19);
         dockExpand = new ImageView(this);
@@ -3616,7 +3731,6 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
         View glow = new View(this);
         // Same aura the sport and weather cards use: outside the tile, not under it.
         glow.setBackground(new AppGlowDrawable(32, true));
-        glow.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         glow.setAlpha(0f);
         place(glow, x - 24, 743, 388, 164);
         dockGlows.add(glow);
@@ -3831,12 +3945,11 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
         if (cached != null) return cached;
         File file = customIconFile(pkg);
         if (file == null || !file.isFile()) return null;
-        try (InputStream in = new FileInputStream(file)) {
-            Bitmap bitmap = BitmapFactory.decodeStream(in);
-            if (bitmap == null) return null;
-            customIconCache.put(pkg, bitmap);
-            return bitmap;
-        } catch (Exception ignored) { return null; }
+        // decodeIcon caps the size as well, so icons saved by older builds (512 px) shrink too.
+        Bitmap bitmap = decodeIcon(file);
+        if (bitmap == null) return null;
+        customIconCache.put(pkg, bitmap);
+        return bitmap;
     }
 
     private Drawable customArtwork(String pkg) {
@@ -4551,7 +4664,6 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
             View glow = new View(this);
             // Same aura the sport and weather cards use: outside the tile, not under it.
             glow.setBackground(new AppGlowDrawable(32, true));
-            glow.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
             glow.setAlpha(0f);
             FrameLayout.LayoutParams glowParams = new FrameLayout.LayoutParams(px(388), px(164));
             glowParams.leftMargin = -px(4);
@@ -4669,7 +4781,6 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
             View glow = new View(this);
             // Same aura the sport and weather cards use: outside the tile, not under it.
             glow.setBackground(new AppGlowDrawable(32, true));
-            glow.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
             glow.setAlpha(0f);
             FrameLayout.LayoutParams glowParams = new FrameLayout.LayoutParams(px(388), px(164));
             glowParams.leftMargin = -px(4);
@@ -4732,6 +4843,21 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
         openAppDrawer(1, 0);
     }
 
+    /**
+     * Builds the tile rows of the app list. Reading every banner and label from the package manager
+     * takes some 20 ms, which used to run inside the key press that opens the list; the dashboard
+     * now does it once, while nothing else is happening.
+     */
+    private void buildDrawerRows(LinearLayout rows) {
+        if (rows == null || rows != drawerRows || drawerRowsLoaded) return;
+        if (isFinishing() || isDestroyed()) return;
+        String[] dockLabels = new String[dockPackages.size()];
+        for (int i = 0; i < dockLabels.length; i++) dockLabels[i] = appLabel(dockPackages.get(i));
+        addMainDrawerRow(rows, dockLabels, dockPackages.toArray(new String[0]));
+        populateExtraApps(rows);
+        drawerRowsLoaded = true;
+    }
+
     private void openAppDrawer(int focusRow, int focusColumn) {
         if (appDrawerOpen) return;
         // Remember where the remote comes from before anything below disturbs focus: hiding the
@@ -4746,27 +4872,17 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
             }
         }
         lastDockFocus = source;
-        if (!drawerRowsLoaded) {
-            String[] dockLabels = new String[dockPackages.size()];
-            for (int i = 0; i < dockLabels.length; i++) dockLabels[i] = appLabel(dockPackages.get(i));
-            addMainDrawerRow(drawerRows, dockLabels, dockPackages.toArray(new String[0]));
-            populateExtraApps(drawerRows);
-            drawerRowsLoaded = true;
-        }
+        if (!drawerRowsLoaded) buildDrawerRows(drawerRows);
         appDrawerOpen = true;
-        int width = Math.max(1, root.getWidth() / 4);
-        int height = Math.max(1, root.getHeight() / 4);
-        drawerBlurBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-        Canvas capture = new Canvas(drawerBlurBitmap);
-        capture.scale(width / (float) root.getWidth(), height / (float) root.getHeight());
-        for (View card : dockCards) card.setVisibility(View.INVISIBLE);
-        for (View glow : dockGlows) glow.setVisibility(View.INVISIBLE);
-        dockExpand.setVisibility(View.INVISIBLE);
-        root.draw(capture);
-        for (View card : dockCards) card.setVisibility(View.VISIBLE);
-        for (View glow : dockGlows) glow.setVisibility(View.VISIBLE);
-        dockExpand.setVisibility(View.VISIBLE);
-        blurBackdrop(drawerBlurBitmap, 2, 1);
+        // The screenshot behind the panel only changes when the dashboard is rebuilt (wallpaper,
+        // colours, cards), so it is taken once and reused: capturing it costs ~35 ms on the UI
+        // thread and it is blurred far beyond recognition anyway.
+        int captureWidth = Math.max(1, root.getWidth() / 4);
+        int captureHeight = Math.max(1, root.getHeight() / 4);
+        if (drawerBlurBitmap == null || drawerBlurBitmap.getWidth() != captureWidth
+                || drawerBlurBitmap.getHeight() != captureHeight) {
+            captureDrawerBackdrop(captureWidth, captureHeight);
+        }
         drawerBlurImage.setImageBitmap(drawerBlurBitmap);
         drawerBackdrop.setAlpha(0f);
         drawerBackdrop.setVisibility(View.VISIBLE);
@@ -4791,6 +4907,25 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
         if (target != null) handler.postDelayed(() -> {
             if (appDrawerOpen) target.requestFocus();
         }, 340);
+    }
+
+    /**
+     * Grabs the dashboard behind the panel at quarter size and blurs it. The dock is hidden for the
+     * shot so the panel does not show the dock tiles twice.
+     */
+    private void captureDrawerBackdrop(int width, int height) {
+        if (drawerBlurBitmap != null) drawerBlurBitmap.recycle();
+        drawerBlurBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        Canvas capture = new Canvas(drawerBlurBitmap);
+        capture.scale(width / (float) root.getWidth(), height / (float) root.getHeight());
+        for (View card : dockCards) card.setVisibility(View.INVISIBLE);
+        for (View glow : dockGlows) glow.setVisibility(View.INVISIBLE);
+        dockExpand.setVisibility(View.INVISIBLE);
+        root.draw(capture);
+        for (View card : dockCards) card.setVisibility(View.VISIBLE);
+        for (View glow : dockGlows) glow.setVisibility(View.VISIBLE);
+        dockExpand.setVisibility(View.VISIBLE);
+        blurBackdrop(drawerBlurBitmap, 2, 1);
     }
 
     private void suspendBackgroundFocus(View view) {
@@ -4833,17 +4968,15 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
             if (!appDrawerOpen) {
                 drawerBackdrop.setVisibility(View.GONE);
                 drawerBlurImage.setImageDrawable(null);
-                if (drawerBlurBitmap != null) {
-                    drawerBlurBitmap.recycle();
-                    drawerBlurBitmap = null;
-                }
+                // The blurred screenshot stays cached for the next open; buildAppDock() drops it
+                // when the dashboard itself is rebuilt.
             }
         }).start();
         drawerTitle.animate().alpha(0).setDuration(220).withEndAction(() -> {
             if (!appDrawerOpen) drawerTitle.setVisibility(View.GONE);
         }).start();
         appDrawer.animate().translationY(px(110)).alpha(0).setDuration(260).withEndAction(() -> {
-            if (!appDrawerOpen) appDrawer.setVisibility(View.GONE);
+            if (!appDrawerOpen) appDrawer.setVisibility(View.INVISIBLE);
         }).start();
         dockExpand.setVisibility(View.VISIBLE);
         if (restore != null) handler.postDelayed(restore::requestFocus, 40);
@@ -5020,8 +5153,21 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
         tile.setScaleY(scale);
     }
 
+    /**
+     * One pre-rendered aura per size and colour. A {@link android.graphics.BlurMaskFilter} can only
+     * be drawn in software, so drawing the aura straight into each glow view meant a software layer
+     * per tile - nineteen of them cost about 200 ms every time the app list opened. The aura is the
+     * same for every tile, so it is blurred once and then only copied to the screen.
+     */
+    private static final java.util.LinkedHashMap<String, Bitmap> AURA_CACHE =
+            new java.util.LinkedHashMap<String, Bitmap>(8, 0.75f, true) {
+                @Override protected boolean removeEldestEntry(java.util.Map.Entry<String, Bitmap> eldest) {
+                    return size() > 24;
+                }
+            };
+    private static final Paint AURA_PAINT = new Paint(Paint.FILTER_BITMAP_FLAG);
+
     private final class AppGlowDrawable extends Drawable {
-        private final Paint glow = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final int radius;
         private final boolean outerOnly;
         private final int outerColor, innerColor;
@@ -5037,36 +5183,54 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
         }
         @Override public void draw(Canvas canvas) {
             android.graphics.Rect bounds = getBounds();
-            RectF card = new RectF(bounds.left + px(24), bounds.top + px(22),
-                    bounds.right - px(24), bounds.bottom - px(22));
+            int width = bounds.width(), height = bounds.height();
+            if (width <= px(48) || height <= px(44)) return;
+            String key = width + "x" + height + ":" + radius + ":" + (outerOnly ? 1 : 0)
+                    + ":" + outerColor + ":" + innerColor;
+            Bitmap aura = AURA_CACHE.get(key);
+            if (aura == null) {
+                aura = renderAura(width, height);
+                AURA_CACHE.put(key, aura);
+            }
+            // Half resolution is invisible on a blur and keeps the cache small.
+            canvas.drawBitmap(aura, null, new RectF(bounds.left, bounds.top, bounds.right, bounds.bottom),
+                    AURA_PAINT);
+        }
+        private Bitmap renderAura(int width, int height) {
+            int halfWidth = Math.max(1, width / 2), halfHeight = Math.max(1, height / 2);
+            Bitmap bitmap = Bitmap.createBitmap(halfWidth, halfHeight, Bitmap.Config.ARGB_8888);
+            Canvas canvas = new Canvas(bitmap);
+            canvas.scale(halfWidth / (float) width, halfHeight / (float) height);
+            Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            RectF card = new RectF(px(24), px(22), width - px(24), height - px(22));
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(outerColor);
+            paint.setMaskFilter(new android.graphics.BlurMaskFilter(px(26),
+                    android.graphics.BlurMaskFilter.Blur.NORMAL));
+            canvas.drawRoundRect(card, px(radius), px(radius), paint);
+            paint.setColor(innerColor);
+            paint.setMaskFilter(new android.graphics.BlurMaskFilter(px(11),
+                    android.graphics.BlurMaskFilter.Blur.NORMAL));
+            canvas.drawRoundRect(card, px(radius), px(radius), paint);
+            paint.setMaskFilter(null);
             if (outerOnly) {
                 // Use the app tile's full-strength aura, then mask its centre because
                 // these dashboard cards are translucent and would reveal the fill.
-                glow.setStyle(Paint.Style.FILL);
-                glow.setColor(outerColor);
-                glow.setMaskFilter(new android.graphics.BlurMaskFilter(px(26),
-                        android.graphics.BlurMaskFilter.Blur.NORMAL));
-                canvas.drawRoundRect(card, px(radius), px(radius), glow);
-                glow.setColor(innerColor);
-                glow.setMaskFilter(new android.graphics.BlurMaskFilter(px(11),
-                        android.graphics.BlurMaskFilter.Blur.NORMAL));
-                canvas.drawRoundRect(card, px(radius), px(radius), glow);
-                glow.setMaskFilter(null);
-                glow.setXfermode(new android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR));
-                canvas.drawRoundRect(card, px(radius), px(radius), glow);
-                glow.setXfermode(null);
-                return;
+                paint.setXfermode(new android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR));
+                canvas.drawRoundRect(card, px(radius), px(radius), paint);
+                paint.setXfermode(null);
             }
-            glow.setStyle(Paint.Style.FILL);
-            glow.setColor(outerColor);
-            glow.setMaskFilter(new android.graphics.BlurMaskFilter(px(26),
+            // Let the aura die out before the bitmap ends. Without this the blur is chopped off by
+            // the edge of the view, which showed up as a bright rectangle around the focused tile.
+            Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
+            edge.setColor(Color.WHITE);
+            edge.setMaskFilter(new android.graphics.BlurMaskFilter(px(9),
                     android.graphics.BlurMaskFilter.Blur.NORMAL));
-            canvas.drawRoundRect(card, px(radius), px(radius), glow);
-            glow.setColor(innerColor);
-            glow.setMaskFilter(new android.graphics.BlurMaskFilter(px(11),
-                    android.graphics.BlurMaskFilter.Blur.NORMAL));
-            canvas.drawRoundRect(card, px(radius), px(radius), glow);
-            glow.setMaskFilter(null);
+            edge.setXfermode(new android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN));
+            float inset = px(7);
+            canvas.drawRoundRect(new RectF(inset, inset, width - inset, height - inset),
+                    px(radius) + inset, px(radius) + inset, edge);
+            return bitmap;
         }
         @Override public void setAlpha(int alpha) { }
         @Override public void setColorFilter(android.graphics.ColorFilter filter) { }
@@ -5344,16 +5508,32 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
 
     private Bitmap decodeWallpaperFile(File file) {
         try (InputStream boundsStream = new FileInputStream(file);
-                 InputStream imageStream = new FileInputStream(file)) {
-                BitmapFactory.Options options = new BitmapFactory.Options();
-                options.inJustDecodeBounds = true;
-                BitmapFactory.decodeStream(boundsStream, null, options);
-                options.inJustDecodeBounds = false;
-                options.inSampleSize = 1;
-                while (options.outWidth / options.inSampleSize > 2560
-                        || options.outHeight / options.inSampleSize > 1440) options.inSampleSize *= 2;
-                 return BitmapFactory.decodeStream(imageStream, null, options);
-            } catch (Exception ignored) { }
+             InputStream imageStream = new FileInputStream(file)) {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeStream(boundsStream, null, bounds);
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
+            // The photo fills the screen; the screensaver adds a 1.09x Ken Burns zoom on top.
+            DisplayMetrics metrics = getResources().getDisplayMetrics();
+            int maxWidth = Math.max(1, Math.round(metrics.widthPixels * 1.12f));
+            int maxHeight = Math.max(1, Math.round(metrics.heightPixels * 1.12f));
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            // Same coarse rule as before (a photo never passes through memory above 2560x1440),
+            // then the exact scaling below trims the result to the screen size.
+            int sample = 1;
+            while (bounds.outWidth / sample > 2560 || bounds.outHeight / sample > 1440) sample *= 2;
+            options.inSampleSize = sample;
+            // A power-of-two size either wastes memory (2560x1440 on a 1080p screen) or loses
+            // detail (1280x720), so the coarse result is scaled exactly to the screen box.
+            float fit = Math.min(maxWidth / (float) (bounds.outWidth / sample),
+                    maxHeight / (float) (bounds.outHeight / sample));
+            if (fit < 1f) {
+                options.inScaled = true;
+                options.inDensity = 10_000;
+                options.inTargetDensity = Math.max(1, Math.round(10_000 * fit));
+            }
+            return BitmapFactory.decodeStream(imageStream, null, options);
+        } catch (Exception | OutOfMemoryError ignored) { }
         return null;
     }
 
@@ -5511,7 +5691,6 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
         deleteWrap.setVisibility(View.GONE);
         View deleteGlow = new View(this);
         deleteGlow.setBackground(new AppGlowDrawable(13, false));
-        deleteGlow.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         deleteGlow.setAlpha(0f);
         deleteWrap.addView(deleteGlow, new FrameLayout.LayoutParams(px(251), px(92)));
         TextView delete = new TextView(this);
@@ -5554,7 +5733,6 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
         addWrap.setClipChildren(false);
         View addGlow = new View(this);
         addGlow.setBackground(new AppGlowDrawable(14, false));
-        addGlow.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         addGlow.setAlpha(0f);
         addWrap.addView(addGlow, new FrameLayout.LayoutParams(px(328), px(97)));
         LinearLayout add = new LinearLayout(this);
@@ -5601,7 +5779,6 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
         closeWrap.setClipChildren(false);
         View closeGlow = new View(this);
         closeGlow.setBackground(new AppGlowDrawable(13, false));
-        closeGlow.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         closeGlow.setAlpha(0f);
         closeWrap.addView(closeGlow, new FrameLayout.LayoutParams(px(203), px(92)));
         TextView close = new TextView(this);
@@ -5647,7 +5824,6 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
         wrapper.setClipToPadding(false);
         View glow = new View(this);
         glow.setBackground(new AppGlowDrawable(18, false));
-        glow.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         glow.setAlpha(0f);
         wrapper.addView(glow, new FrameLayout.LayoutParams(px(308), px(226)));
         FrameLayout tile = new FrameLayout(this);
@@ -5749,7 +5925,6 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
         wrapper.setClipChildren(false);
         View glow = new View(this);
         glow.setBackground(new AppGlowDrawable(13, false));
-        glow.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         glow.setAlpha(0f);
         wrapper.addView(glow, new FrameLayout.LayoutParams(px(188), px(92)));
         TextView button = new TextView(this);
@@ -5779,8 +5954,9 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
             BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
             BitmapFactory.Options options = new BitmapFactory.Options();
             options.inSampleSize = 1;
-            while (bounds.outWidth / options.inSampleSize > 520
-                    || bounds.outHeight / options.inSampleSize > 360) options.inSampleSize *= 2;
+            // The gallery card is about 300 px wide; a larger copy only costs memory.
+            while (bounds.outWidth / options.inSampleSize > 400
+                    || bounds.outHeight / options.inSampleSize > 280) options.inSampleSize *= 2;
             return BitmapFactory.decodeFile(file.getAbsolutePath(), options);
         } catch (Exception ignored) { return null; }
     }
@@ -5877,7 +6053,6 @@ second.setOnClickListener(v -> chooseLeague(1, draft, second, dialog, status));
         wrapper.setClipToPadding(false);
         View glow = new View(this);
         glow.setBackground(new AppGlowDrawable(21, false));
-        glow.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         glow.setAlpha(0f);
         FrameLayout.LayoutParams glowParams = new FrameLayout.LayoutParams(-1, -1);
         glowParams.setMargins(-px(24), -px(24), -px(24), -px(24));
