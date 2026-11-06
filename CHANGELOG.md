@@ -12,12 +12,18 @@ Ulepszone
 - **Płynniejsze otwieranie listy aplikacji.** Poświata fokusu jest rysowana raz na rozmiar i kolor, bez warstwy software na każdym kafelku; lista otwiera się w ok. 70 ms zamiast ok. 350 ms, a poświata nie jest już przycinana na brzegach.
 - Po zamknięciu ustawień pilot działa od razu: fokus wraca na kafelek, z którego otwarto panel, także gdy panel zdążył przerysować pulpit.
 
+Do wiadomości
+- Repozytorium forka zmieniło nazwę na `linartv-launcher-seyforked` (wcześniej `linartv-launcher-open`). Aplikacja sprawdza aktualizacje w wydaniach tego forka, a nie upstreamu, więc aktualizacja nie podmieni forka na wersję oryginalną.
+
 **English**
 
 Improved
 - **Lighter memory use.** A wallpaper photo is scaled exactly to the screen (previously up to 2560×1440), the Spotify cover to the bar size, and gallery thumbnails are smaller. Custom dock icons are kept at most 384 px — older 512-pixel ones shrink when loaded. Icons, crests and weather art use byte-limited caches, and the system can drop them immediately under memory pressure (`onTrimMemory`).
 - **Faster app list.** The focus aura is rendered once per size and colour instead of a software layer on every tile; the list opens in about 70 ms instead of about 350 ms, and the aura is no longer clipped at the edges.
 - The remote works right after closing the settings panel: focus returns to the tile that opened it, even when the panel rebuilt the dashboard behind it.
+
+Note
+- The fork repository was renamed to `linartv-launcher-seyforked` (previously `linartv-launcher-open`). The app checks for updates in this fork's releases rather than upstream's, so an update cannot replace the fork with the original build.
 
 ## 1.0.2 — 2026-10-30
 

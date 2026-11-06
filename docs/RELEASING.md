@@ -20,9 +20,9 @@
 3. Na GitHubie: **Releases → Draft a new release**, tag `vX.Y.Z` zgodny z `versionName` (np. `v1.0.0`), dołącz plik `dist\LinarTV.apk` **zawsze pod nazwą `LinarTV.apk`**.
 
 ### Kod Downloadera (raz)
-Stały link do najnowszego APK:
+Stały link do najnowszego APK **tego forka** (i to na to repo wskazuje `AppUpdates.LATEST`):
 ```
-https://github.com/domlin92/linartv-launcher-open/releases/latest/download/LinarTV.apk
+https://github.com/seythegamer/linartv-launcher-seyforked/releases/latest/download/LinarTV.apk
 ```
 1. Po opublikowaniu pierwszego wydania otwórz ten link w przeglądarce i sprawdź, że pobiera się APK.
 2. Wejdź na https://aftv.news, wklej link i utwórz skrót — dostaniesz numeryczny kod.
@@ -48,9 +48,9 @@ https://github.com/domlin92/linartv-launcher-open/releases/latest/download/Linar
 3. On GitHub: **Releases → Draft a new release**, tag `vX.Y.Z` matching `versionName` (e.g. `v1.0.0`), attach `dist\LinarTV.apk` **always named `LinarTV.apk`**.
 
 ### Downloader code (once)
-Permanent link to the latest APK:
+Permanent link to the latest APK of **this fork** (also what `AppUpdates.LATEST` points at):
 ```
-https://github.com/domlin92/linartv-launcher-open/releases/latest/download/LinarTV.apk
+https://github.com/seythegamer/linartv-launcher-seyforked/releases/latest/download/LinarTV.apk
 ```
 1. After the first release, open the link in a browser and check that the APK downloads.
 2. Go to https://aftv.news, paste the link and create a short code.

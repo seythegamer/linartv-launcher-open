@@ -1,11 +1,15 @@
-# LinarTV Open — personal fork
+# LinarTV Open — seythegamer fork
 
-**This is a fork of [LinarTV Open](https://github.com/domlin92/linartv-launcher-open) by domlin92.**
+**This is a fork of [LinarTV Open](https://github.com/domlin92/linartv-launcher-open) by domlin92, kept in
+[seythegamer/linartv-launcher-seyforked](https://github.com/seythegamer/linartv-launcher-seyforked).**
 It is not the original project and it is not maintained by the original author. Installation, credits and
 license come from upstream and still apply; the changes listed below exist only in this repository.
 
 Upstream is the place to go for the official releases, documentation and issue reports:
 <https://github.com/domlin92/linartv-launcher-open>.
+
+The fork repository was renamed to `linartv-launcher-seyforked` (from `linartv-launcher-open`); GitHub
+redirects the old links, and the app's user agent and update check already use the new name.
 
 ## What the app is
 
@@ -20,7 +24,9 @@ advertising and tracking services. If you also want to tidy up the TV's system a
 
 ## What this fork changes
 
-Three commits on top of upstream `main` (`2a17480`), 27 files, +1595 / −80.
+Everything sits on top of upstream `main` (`2a17480`). The app still reports `versionName 1.0.2`
+(`versionCode 3`) in `app/build.gradle`; the next section of the [CHANGELOG](CHANGELOG.md) is 1.0.3
+(unreleased) and covers the work below.
 
 ### 1. Custom dock icons and a clearer app drawer
 
@@ -65,6 +71,37 @@ Three commits on top of upstream `main` (`2a17480`), 27 files, +1595 / −80.
 - The logic lives in `WeatherWallpaper.java` (plain Java, no Android imports), covered by
   `tests/WeatherWallpaperCheck.java`.
 
+### 4. Faster app drawer, a clean selection aura and lower memory use
+
+- **The drawer opens about five times faster.** Only the visible column is built, the blurred wallpaper is
+  reused instead of being rendered again, and the animation runs on the already warm view tree. Measured on
+  the Android TV box the fork is developed on (Android TV 11, sdk 30, 1080p): median of the 90th percentile
+  **350 ms → ~70 ms**.
+- **The selection aura stays inside the tile:** a thin 2 px frame plus a softer glow instead of a shadow
+  bleeding over the neighbours — black on a light app, white on a dark one. Select on the same column it
+  was entered from, and **Back returns focus to the tile that opened the drawer**.
+- **Lower memory use, no feature removed:**
+  - a wallpaper photo is decoded at screen size × 1.12 instead of 2560×1440 (`inSampleSize` plus density
+    scaling, so the result is never larger than the old one);
+  - club crests and custom dock icons live in bitmap LRU caches (4 MB and 8 MB) instead of two maps that
+    only grew; evicted bitmaps are dropped, not recycled;
+  - weather icons (Meteocons) use a byte-budgeted LRU cache (2 MB) with `clear()` on demand;
+  - gallery thumbnails are 400×280 and custom icons are stored at 384 px — older 512 px files are shrunk
+    when they are loaded;
+  - the Spotify cover is downscaled to 192 px;
+  - `onTrimMemory` / `onLowMemory` release the caches, and the dialog background blur bitmap is freed when
+    the dialog closes;
+  - a closed settings dialog hands focus back to the dashboard, so the remote works on the first press
+    instead of after pressing something twice.
+- Cold-start memory in the state measured on that TV: **PSS 58 588 → 55 950 KB**, and a photo wallpaper
+  uses **15 744 KB instead of 24 544 KB** of graphics memory.
+- **Update check points at this fork.** `AppUpdates.LATEST` asks
+  `seythegamer/linartv-launcher-seyforked` for releases, so an update can never replace the fork with an
+  upstream build. Debug builds still never show the update bar (Android refuses an APK signed with another
+  key); a debuggable build can test the bar with the `update_test_version` preference. The pinned upstream
+  certificate was replaced by a "release build only" check, so the fork can publish its own signed releases
+  — see [docs/RELEASING.md](docs/RELEASING.md).
+
 ## Build from source
 
 JDK 17 and the Android SDK are required (`JAVA_HOME`, `ANDROID_HOME`).
@@ -78,9 +115,10 @@ Local checks: `scripts/test-local.ps1` (Windows) or the Java checks in `tests/`.
 
 ## Install on a TV
 
-The signed official APK is published by upstream in
-[its Releases](https://github.com/domlin92/linartv-launcher-open/releases/latest). Builds from this fork are
-debug builds — install them over `adb`:
+The official signed APK for Android TV is published by upstream in
+[its Releases](https://github.com/domlin92/linartv-launcher-open/releases/latest). Releases published in
+[this fork](https://github.com/seythegamer/linartv-launcher-seyforked/releases/latest) carry the fork's
+changes; local `./gradlew :app:assembleDebug` builds are debug builds — install those over `adb`:
 
 ```text
 adb connect <TV_IP>:5555

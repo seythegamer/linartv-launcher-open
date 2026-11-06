@@ -16,9 +16,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
 /**
- * "Update available": once a day the app asks GitHub for the latest LinarTV Open release
- * (our own repository) and, when it is newer, can download LinarTV.apk for Android's own
- * install window. Nothing is installed without the user pressing "Install" there.
+ * "Update available": once a day the app asks GitHub for the latest release of this fork
+ * (seythegamer/linartv-launcher-seyforked, not upstream) and, when it is newer, can download
+ * LinarTV.apk for Android's own install window. Nothing is installed without the user pressing
+ * "Install" there.
  */
 final class AppUpdates {
     static final class Release {
@@ -29,7 +30,8 @@ final class AppUpdates {
         }
     }
 
-    private static final String LATEST = "https://api.github.com/repos/domlin92/linartv-launcher-open/releases/latest";
+    private static final String LATEST =
+            "https://api.github.com/repos/seythegamer/linartv-launcher-seyforked/releases/latest";
     private static final long CHECK_EVERY_MS = 24L * 60 * 60 * 1000;
 
     private AppUpdates() { }
@@ -49,13 +51,13 @@ final class AppUpdates {
      * thread); in between the last answer is reused.
      */
     static Release check(Context context, boolean force) {
-        // GitHub Releases carry only LinarTV Open; other builds (LinarTV Private) never ask.
+        // GitHub Releases carry only this launcher; other builds (LinarTV Private) never ask.
         if (!"io.github.domlin92.linartv.open".equals(context.getPackageName())) return null;
         SharedPreferences prefs = prefs(context);
-        // Only copies installed from GitHub Releases are offered updates. Test builds are signed
-        // with another key; Android would refuse the release over them, so they never see the bar
-        // (a debug build can still test the bar with "update_test_version").
-        if (!releaseSigned(context) && !prefs.contains("update_test_version")) return null;
+        // Only release builds are offered updates. Debug and test builds carry the debug key, so
+        // Android would refuse a release APK over them; those builds skip the bar unless they are
+        // testing it with "update_test_version". Android checks the signature again on install.
+        if (!releaseBuild(context) && !prefs.contains("update_test_version")) return null;
         long now = System.currentTimeMillis();
         String json = prefs.getString("latest_json", null);
         if (force || json == null || now - prefs.getLong("checked_at", 0) >= CHECK_EVERY_MS) {
@@ -141,20 +143,13 @@ final class AppUpdates {
         } catch (Exception e) { return false; }
     }
 
-    /** SHA-256 of the certificate that signs GitHub releases (also printed in each release's notes). */
-    private static final String RELEASE_CERT_SHA256 = "4ec7ad52b64f86e19e3c91790c1276c49fe641c3c20db56454669821b4e0ad4c";
-
-    @SuppressWarnings("deprecation")
-    static boolean releaseSigned(Context context) {
-        try {
-            Signature[] signatures = context.getPackageManager()
-                    .getPackageInfo(context.getPackageName(), PackageManager.GET_SIGNATURES).signatures;
-            if (signatures == null || signatures.length == 0) return false;
-            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(signatures[0].toByteArray());
-            StringBuilder hex = new StringBuilder();
-            for (byte b : digest) hex.append(String.format("%02x", b));
-            return RELEASE_CERT_SHA256.equals(hex.toString());
-        } catch (Exception e) { return false; }
+    /**
+     * True for builds that can take an update: a release build (not debuggable). Which certificate
+     * it carries does not matter — {@link #sameSigner} and Android itself reject a downloaded APK
+     * signed with another key, so this fork can publish releases with its own keystore.
+     */
+    static boolean releaseBuild(Context context) {
+        return (context.getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0;
     }
 
     /** -1, 0 or 1 for "1.0.2" against "1.0.10" style versions. */
@@ -176,7 +171,8 @@ final class AppUpdates {
     }
 
     private static String userAgent(Context context) {
-        return "LinarTV/" + installedVersion(context) + " (Android TV launcher; +https://github.com/domlin92/linartv-launcher-open)";
+        return "LinarTV/" + installedVersion(context)
+                + " (Android TV launcher; +https://github.com/seythegamer/linartv-launcher-seyforked)";
     }
 
     private static String read(String address, Context context) throws Exception {

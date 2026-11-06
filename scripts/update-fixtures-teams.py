@@ -19,7 +19,7 @@ LEAGUES = [  # (code, fixtur.es top-league page, second-division page)
     ("it.1", "serie-a", "serie-b"),
     ("fr.1", "ligue-1", "ligue-2"),
 ]
-UA = "LinarTV-maintenance (+https://github.com/domlin92/linartv-launcher-open)"
+UA = "LinarTV-maintenance (+https://github.com/seythegamer/linartv-launcher-seyforked)"
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "app", "src", "main", "assets", "fixtures-teams.json")
 
 

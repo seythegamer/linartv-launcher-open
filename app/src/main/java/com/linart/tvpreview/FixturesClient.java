@@ -205,7 +205,8 @@ final class FixturesClient {
         String version = "?";
         try { version = app.getPackageManager().getPackageInfo(app.getPackageName(), 0).versionName; }
         catch (Exception ignored) { }
-        return "LinarTV/" + version + " (Android TV launcher; +https://github.com/domlin92/linartv-launcher-open)";
+        return "LinarTV/" + version
+                + " (Android TV launcher; +https://github.com/seythegamer/linartv-launcher-seyforked)";
     }
 
     private static String unescape(String value) {
